@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: morning-summary-station
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ACCUWEATHER_API_KEY
+        sync: false
+      - key: LOCATION
+        value: London
+      - key: ADDRESS
+        value: 16 acer road, dalston - E83GX
+      - key: GOOGLE_CALENDAR_ID
+        value: primary
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+    autoDeploy: true 
