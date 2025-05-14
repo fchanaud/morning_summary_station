@@ -105,7 +105,7 @@ Now you'll have a single button on your home screen that when tapped will:
    - **Name**: `morning-summary-station` (or your preferred name)
    - **Environment**: `Python 3`
    - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn app:app`
+   - **Start Command**: `bash start.sh`
    
 5. Add the following environment variables:
    - `OPENAI_API_KEY`: Your OpenAI API key
