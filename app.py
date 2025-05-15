@@ -3,6 +3,8 @@ import json
 import pickle
 import datetime
 import logging
+import uuid
+import base64
 from flask import Flask, jsonify, request, redirect, url_for, session
 import requests
 from dotenv import load_dotenv
@@ -56,6 +58,10 @@ else:
     # Set the redirect URI for local development
     REDIRECT_URI = os.getenv('REDIRECT_URI', 'http://localhost:5000/oauth2callback')
     logger.info(f"Using local redirect URI: {REDIRECT_URI}")
+
+# Dictionary to store OAuth flow states
+# This allows us to recover the flow even if the session is lost
+oauth_flows = {}
 
 # OAuth 2.0 Client Configuration
 CLIENT_CONFIG = {
@@ -118,25 +124,32 @@ def get_credentials():
                 creds = None
         else:
             try:
-                # Create a new flow - don't store in session yet (will cause serialization issues)
+                # Create a new flow
                 flow = Flow.from_client_config(
                     CLIENT_CONFIG,
                     SCOPES,
                     redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
                 )
+                
+                # Generate a unique state parameter
+                state = str(uuid.uuid4())
+                
+                # Store the flow in our dictionary with the state as the key
+                oauth_flows[state] = flow
+                logger.info(f"Created new OAuth flow with state: {state}")
+                
                 auth_url, _ = flow.authorization_url(
                     access_type='offline',
                     include_granted_scopes='true',
                     prompt='consent',
-                    # Add a login_hint if the user's email is known
-                    # login_hint='user@example.com', # Uncomment and customize if needed
+                    state=state,  # Use our state parameter
                 )
                 logger.info(f"Generated authorization URL: {auth_url[:50]}...")
                 print(f"Please go to this URL to authorize access: {auth_url}")
                 
-                # Only store the flow in session when actually needed
-                # and clear it immediately after use to avoid serialization issues
-                session['flow'] = flow
+                # Also store in session as a backup
+                session['oauth_state'] = state
+                
                 return None
             except Exception as e:
                 logger.error(f"Error setting up OAuth flow: {e}")
@@ -397,39 +410,48 @@ def oauth2callback():
     try:
         logger.info("OAuth callback received with URL: " + request.url)
         
-        # Get flow from session
-        flow = session.get('flow')
-        if not flow:
-            logger.error("No flow found in session during OAuth callback")
-            
-            # Create a new flow for the callback
+        # Get the state parameter from the request
+        state = request.args.get('state')
+        if not state:
+            logger.error("No state parameter in OAuth callback")
+            return "Authentication failed: Missing state parameter. Please restart the app."
+        
+        logger.info(f"Received callback with state: {state}")
+        
+        # Try to get the flow from our dictionary using the state
+        flow = oauth_flows.get(state)
+        
+        # If not found in the dictionary, try from session as backup
+        if not flow and session.get('oauth_state') == state:
             try:
+                logger.info("Recreating flow from scratch using state from session")
                 flow = Flow.from_client_config(
                     CLIENT_CONFIG,
                     SCOPES,
                     redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
                 )
-                logger.info("Created new flow for OAuth callback")
             except Exception as flow_error:
-                logger.error(f"Failed to create new flow: {flow_error}")
-                return f"""
-                <html>
-                    <head>
-                        <title>Authentication Error</title>
-                        <style>
-                            body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }}
-                            h1 {{ color: #F44336; }}
-                            pre {{ background: #f5f5f5; padding: 10px; text-align: left; overflow: auto; }}
-                        </style>
-                    </head>
-                    <body>
-                        <h1>Authentication Failed</h1>
-                        <p>No authentication flow was found in your session, and we couldn't create a new one.</p>
-                        <p>Please try again by returning to the main page and starting over.</p>
-                        <p>Error details: {str(flow_error)}</p>
-                    </body>
-                </html>
-                """
+                logger.error(f"Failed to recreate flow: {flow_error}")
+        
+        if not flow:
+            logger.error(f"No flow found for state: {state}")
+            return f"""
+            <html>
+                <head>
+                    <title>Authentication Error</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }}
+                        h1 {{ color: #F44336; }}
+                        pre {{ background: #f5f5f5; padding: 10px; text-align: left; overflow: auto; }}
+                    </style>
+                </head>
+                <body>
+                    <h1>Authentication Failed</h1>
+                    <p>No authentication flow was found for your session state ({state}).</p>
+                    <p>Please try again by returning to the main page and starting over.</p>
+                </body>
+            </html>
+            """
         
         # Complete OAuth flow
         try:
@@ -439,6 +461,11 @@ def oauth2callback():
             flow.fetch_token(authorization_response=authorization_response)
             creds = flow.credentials
             logger.info("Successfully obtained credentials from OAuth flow")
+            
+            # Clean up the used flow
+            if state in oauth_flows:
+                del oauth_flows[state]
+                logger.info(f"Removed flow with state: {state} from storage")
         except Exception as token_error:
             logger.error(f"Error fetching token: {token_error}")
             return f"""
@@ -487,8 +514,8 @@ def oauth2callback():
             </html>
             """
         
-        # Remove flow from session to avoid serialization errors
-        session.pop('flow', None)
+        # Remove state from session
+        session.pop('oauth_state', None)
         
         # Return success message
         return """
@@ -564,19 +591,35 @@ def get_text_summary():
             logger.error(f"Error retrieving calendar events: {e}")
             events = []
         
-        # If authorization is needed, redirect to auth URL
-        if not events and 'flow' in session:
-            # Handle Flow object with auth URL separately - don't try to JSON serialize it
+        # Check if we need authorization
+        if not events:
+            # Handle authorization
             try:
-                flow = session.get('flow')
+                # Create a new flow
+                flow = Flow.from_client_config(
+                    CLIENT_CONFIG,
+                    SCOPES,
+                    redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
+                )
+                
+                # Generate a unique state parameter
+                state = str(uuid.uuid4())
+                
+                # Store the flow in our dictionary with the state as the key
+                oauth_flows[state] = flow
+                logger.info(f"Created new OAuth flow with state: {state} for /api/text_summary")
+                
                 auth_url, _ = flow.authorization_url(
                     access_type='offline',
                     include_granted_scopes='true',
-                    prompt='consent'
+                    prompt='consent',
+                    state=state,  # Use our state parameter
                 )
-                # Remove flow from session to avoid serialization errors
-                session.pop('flow', None)
-                logger.info(f"Auth required, redirecting to Google OAuth")
+                
+                # Also store in session as a backup
+                session['oauth_state'] = state
+                
+                logger.info(f"Generated auth URL with state: {state}")
                 
                 # Return just the auth URL as plain text for Shortcuts to handle
                 return f"""Authorization required. Please visit this URL to authorize access (note: you must be added as a test user in Google Cloud Console): 
