@@ -199,11 +199,24 @@ def get_calendar_events():
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
                                  "integrations/google-calendar/get_events.js")
         
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "integrations/google-calendar/calendar_config.json")
+        
+        # Check if the config file exists
+        if not os.path.exists(config_path):
+            logger.warning(f"Calendar config file not found at {config_path}. Need to run auth-calendar script.")
+            logger.info("To set up Google Calendar integration, run: npm run auth-calendar")
+        
         # Check if the script exists and use it if possible
-        if os.path.exists(script_path):
+        if os.path.exists(script_path) and os.path.exists(config_path):
             try:
+                logger.debug(f"Attempting to execute calendar script at: {script_path}")
                 result = subprocess.run(["node", script_path], 
                                       capture_output=True, text=True, check=True)
+                if not result.stdout.strip():
+                    logger.warning("Calendar script returned empty response")
+                    raise Exception("Empty response from calendar script")
+                    
                 events = json.loads(result.stdout)
                 logger.info(f"Successfully retrieved {len(events)} events from MCP calendar integration")
                 
@@ -225,6 +238,8 @@ def get_calendar_events():
                 return transformed_events
             except Exception as e:
                 logger.warning(f"MCP calendar integration failed: {e}, falling back to OAuth")
+                if hasattr(e, 'stderr') and e.stderr:
+                    logger.warning(f"Calendar script stderr: {e.stderr}")
                 # Fall back to OAuth method
                 pass
         
@@ -235,6 +250,7 @@ def get_calendar_events():
         
         # If no credentials yet, return empty list (will be handled by auth flow)
         if not creds:
+            logger.warning("No OAuth credentials available - calendar events cannot be retrieved")
             return []
         
         # Build service
@@ -261,29 +277,10 @@ def get_calendar_events():
     except Exception as e:
         logger.error(f"Error fetching calendar events: {e}")
         # If we hit an auth error, we might need to refresh
-        # For simplicity, return mock data for now if there's an error
-        today = datetime.datetime.now().date()
-        
-        # Mock data for demonstration
-        events = [
-            {
-                "summary": "Morning Meeting",
-                "start": {"dateTime": f"{today}T09:00:00"},
-                "end": {"dateTime": f"{today}T10:00:00"}
-            },
-            {
-                "summary": "Lunch with Alex",
-                "start": {"dateTime": f"{today}T12:30:00"},
-                "end": {"dateTime": f"{today}T13:30:00"}
-            },
-            {
-                "summary": "Project Deadline",
-                "start": {"dateTime": f"{today}T17:00:00"},
-                "end": {"dateTime": f"{today}T18:00:00"}
-            }
-        ]
-        
-        return events
+        # Log the error but don't use mock data
+        logger.warning(f"Returning empty events list due to error: {e}")
+        # Return an empty list instead of mock data
+        return []
 
 def get_weather_data():
     """
@@ -343,6 +340,7 @@ def generate_summary(events, weather):
     try:
         # Format events for the prompt
         events_text = ""
+        no_events_reason = "No events scheduled for today."
         
         # Check if we have any events
         if events:
@@ -389,11 +387,12 @@ def generate_summary(events, weather):
         prompt = f"""Create a brief but enthusiastic morning summary for someone in {LOCATION}.
 Date: {datetime.datetime.now().strftime('%A, %B %d')}
 Weather: {weather_text}
-Events: {events_text if events_text else 'No events today.'}
+Events: {events_text if events_text else no_events_reason}
 
 Make it ENERGETIC, upbeat and SHORT (max 100 words). Include all the details about the weather at {LOCATION} ({ADDRESS}) and all events from the Google Calendar for today."""
         
         logger.debug("Sending request to OpenAI API")
+        logger.debug(f"Prompt details - Events present: {bool(events_text)}, Weather available: {weather_text != 'Weather information not available.'}")
         
         # Verify openai.api_key is set
         if not openai.api_key:
@@ -448,7 +447,7 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words). Include all the details abo
             I couldn't generate your full summary due to an API error, but I hope you have an AMAZING day anyway!
             
             Weather in {LOCATION} ({ADDRESS}): {weather_text}
-            Today's events: {events_text if events_text else 'No events today.'}
+            Today's events: {events_text if events_text else "Could not retrieve calendar events or you have no events scheduled today."}
             
             Error details: {str(openai_error)}
             """
@@ -468,6 +467,7 @@ def index():
                 h1 { color: #333; }
                 code { background-color: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
                 .note { background-color: #fffde7; padding: 15px; border-left: 4px solid #ffd600; margin: 20px 0; }
+                .warning { background-color: #ffebee; padding: 15px; border-left: 4px solid #f44336; margin: 20px 0; }
             </style>
         </head>
         <body>
@@ -482,6 +482,18 @@ def index():
                 Google Cloud Console. Please contact the administrator if you need access.
             </div>
             <p>The first time you use this, you may need to authorize Google Calendar access.</p>
+            
+            <h2>Setting Up Google Calendar Integration</h2>
+            <p>To set up the Google Calendar integration:</p>
+            <ol>
+                <li>Make sure you have your Google API credentials in your .env file</li>
+                <li>Run the following command in the terminal: <code>npm run auth-calendar</code></li>
+                <li>Follow the authentication flow in your browser</li>
+                <li>Your calendar integration will then be active</li>
+            </ol>
+            <div class="warning">
+                <strong>Important:</strong> If you're seeing mock calendar events or no events, you may need to set up the calendar integration.
+            </div>
         </body>
     </html>
     """
@@ -674,14 +686,17 @@ def get_text_summary():
         # Get calendar events with error handling
         try:
             events = get_calendar_events()
-            logger.info(f"Retrieved {len(events)} calendar events")
+            if events:
+                logger.info(f"Retrieved {len(events)} calendar events")
+            else:
+                logger.warning("No calendar events retrieved or error occurred")
         except Exception as e:
             logger.error(f"Error retrieving calendar events: {e}")
             events = []
         
         # Check if we need authorization
-        if not events:
-            # Handle authorization
+        if not events and not os.path.exists(TOKEN_PATH):
+            # Handle authorization - only if token doesn't exist
             try:
                 # Create a new flow
                 flow = Flow.from_client_config(
@@ -777,6 +792,33 @@ def get_calendar_events_direct():
     except Exception as e:
         logger.error(f"Unhandled exception in calendar_events endpoint: {e}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+# Add a debugging endpoint to check calendar integration status
+@app.route('/api/check_calendar', methods=['GET'])
+def check_calendar_integration():
+    """Diagnostic endpoint to check calendar integration status"""
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "integrations/google-calendar/calendar_config.json")
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                               "integrations/google-calendar/get_events.js")
+        
+        status = {
+            "config_exists": os.path.exists(config_path),
+            "script_exists": os.path.exists(script_path),
+            "token_exists": os.path.exists(TOKEN_PATH),
+            "api_keys": {
+                "openai": bool(OPENAI_API_KEY),
+                "accuweather": bool(ACCUWEATHER_API_KEY),
+                "google_client_id": bool(CLIENT_CONFIG['web']['client_id']),
+                "google_client_secret": bool(CLIENT_CONFIG['web']['client_secret'])
+            },
+            "setup_instructions": "Run 'npm run auth-calendar' to set up Google Calendar integration"
+        }
+        
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({"error": f"Error checking calendar integration: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000) 
