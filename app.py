@@ -9,7 +9,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
-from openai import OpenAI
+import openai  # Import the openai module instead of specific class
 
 # Load environment variables
 load_dotenv()
@@ -24,8 +24,8 @@ LOCATION = os.getenv("LOCATION", "London")
 ADDRESS = os.getenv("ADDRESS", "16 acer road, dalston - E83GX")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 
-# Initialize OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Configure the OpenAI API key
+openai.api_key = OPENAI_API_KEY
 
 # Path to store token
 TOKEN_PATH = 'token.pickle'
@@ -252,17 +252,19 @@ def generate_summary(events, weather):
         Keep it concise (around 150 words). Include specific references to the weather and events.
         """
         
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are an EXTREMELY enthusiastic and motivational personal assistant. You love to use CAPITAL LETTERS and exclamation points!!!"},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=500
+        # Use the older OpenAI API format
+        response = openai.Completion.create(
+            model="text-davinci-003",
+            prompt=prompt,
+            temperature=0.7,
+            max_tokens=500,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0
         )
         
         # Extract and return the generated text
-        return response.choices[0].message.content.strip()
+        return response.choices[0].text.strip()
     except Exception as e:
         print(f"Error generating summary: {e}")
         return f"Sorry, I couldn't generate your morning summary: {str(e)}"
