@@ -188,70 +188,13 @@ def get_credentials():
 def get_calendar_events():
     """
     Fetch calendar events from Google Calendar for today.
-    First tries to use the MCP integration, falls back to OAuth if that fails.
     """
     try:
-        # Try to use the MCP integration first
-        import subprocess
-        import json
-        import os
-        
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                                 "integrations/google-calendar/get_events.js")
-        
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "integrations/google-calendar/calendar_config.json")
-        
-        # Check if the config file exists
-        if not os.path.exists(config_path):
-            logger.warning(f"Calendar config file not found at {config_path}. Need to run auth-calendar script.")
-            logger.info("To set up Google Calendar integration, run: npm run auth-calendar")
-        
-        # Check if the script exists and use it if possible
-        if os.path.exists(script_path) and os.path.exists(config_path):
-            try:
-                logger.debug(f"Attempting to execute calendar script at: {script_path}")
-                result = subprocess.run(["node", script_path], 
-                                      capture_output=True, text=True, check=True)
-                if not result.stdout.strip():
-                    logger.warning("Calendar script returned empty response")
-                    raise Exception("Empty response from calendar script")
-                    
-                events = json.loads(result.stdout)
-                logger.info(f"Successfully retrieved {len(events)} events from MCP calendar integration")
-                
-                # Transform events to match expected format
-                transformed_events = []
-                for event in events:
-                    # Convert to the format expected by the rest of the code
-                    transformed_event = {
-                        "summary": event.get("summary", "Untitled Event"),
-                        "start": {
-                            "dateTime": event.get("start")
-                        },
-                        "end": {
-                            "dateTime": event.get("end")
-                        }
-                    }
-                    transformed_events.append(transformed_event)
-                
-                return transformed_events
-            except Exception as e:
-                if hasattr(e, 'stderr') and e.stderr:
-                    logger.warning(f"Calendar script stderr: {e.stderr}")
-                logger.warning(f"MCP calendar integration failed: {e}, falling back to OAuth")
-                # Fall back to OAuth method
-                pass
-        
-        # Original OAuth method as fallback
-        logger.info("Using OAuth method for calendar events")
-        
-        # Make sure we have a valid calendar ID (not "www")
-        if GOOGLE_CALENDAR_ID == "www":
+        # Make sure we have a valid calendar ID
+        calendar_id = GOOGLE_CALENDAR_ID
+        if calendar_id == "www":
             logger.warning("Invalid calendar ID 'www' detected, using 'primary' instead")
             calendar_id = "primary"
-        else:
-            calendar_id = GOOGLE_CALENDAR_ID
         
         # Get credentials
         creds = get_credentials()
@@ -281,13 +224,11 @@ def get_calendar_events():
         # Extract events
         events = events_result.get('items', [])
         
+        logger.info(f"Retrieved {len(events)} events from Google Calendar")
         return events
     except Exception as e:
         logger.error(f"Error fetching calendar events: {e}")
-        # If we hit an auth error, we might need to refresh
-        # Log the error but don't use mock data
-        logger.warning(f"Returning empty events list due to error: {e}")
-        # Return an empty list instead of mock data
+        # Return an empty list
         return []
 
 def get_weather_data():
@@ -302,13 +243,30 @@ def get_weather_data():
             "q": ADDRESS
         }
         
-        location_response = requests.get(location_url, params=params)
+        logger.info(f"Requesting location data for: {ADDRESS}")
+        location_response = requests.get(location_url, params=params, timeout=10)
+        
+        # Check status code first
+        if location_response.status_code != 200:
+            error_msg = f"AccuWeather API returned status code {location_response.status_code}"
+            if location_response.status_code == 503:
+                error_msg += " (Service Unavailable). This could be due to rate limiting or service disruption."
+            elif location_response.status_code == 401:
+                error_msg += " (Unauthorized). Check if your API key is valid."
+            elif location_response.status_code == 429:
+                error_msg += " (Too Many Requests). You've exceeded your rate limit."
+                
+            logger.error(error_msg)
+            return {"error": error_msg}
+            
         location_data = location_response.json()
         
         if not location_data:
+            logger.warning(f"No location data found for address: {ADDRESS}")
             return {"error": "Location not found"}
         
         location_key = location_data[0]["Key"]
+        logger.info(f"Found location key: {location_key}")
         
         # Now get the current conditions
         current_url = f"http://dataservice.accuweather.com/currentconditions/v1/{location_key}"
@@ -317,7 +275,11 @@ def get_weather_data():
             "details": True
         }
         
-        current_response = requests.get(current_url, params=current_params)
+        current_response = requests.get(current_url, params=current_params, timeout=10)
+        if current_response.status_code != 200:
+            logger.error(f"Error fetching current conditions: status code {current_response.status_code}")
+            return {"error": f"Failed to fetch current weather conditions: {current_response.status_code}"}
+            
         current_data = current_response.json()
         
         # Get the daily forecast
@@ -327,8 +289,13 @@ def get_weather_data():
             "metric": True
         }
         
-        forecast_response = requests.get(forecast_url, params=forecast_params)
-        forecast_data = forecast_response.json()
+        forecast_response = requests.get(forecast_url, params=forecast_params, timeout=10)
+        if forecast_response.status_code != 200:
+            logger.error(f"Error fetching forecast: status code {forecast_response.status_code}")
+            # We can still continue with just the current conditions
+            forecast_data = {}
+        else:
+            forecast_data = forecast_response.json()
         
         # Combine current conditions with forecast
         weather_data = {
@@ -337,8 +304,14 @@ def get_weather_data():
         }
         
         return weather_data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error when fetching weather data: {str(e)}")
+        return {"error": f"Network error when fetching weather data: {str(e)}"}
+    except ValueError as e:
+        logger.error(f"JSON parsing error in weather data: {str(e)}")
+        return {"error": f"Invalid response from weather service: {str(e)}"}
     except Exception as e:
-        print(f"Error fetching weather data: {e}")
+        logger.error(f"Unexpected error fetching weather data: {str(e)}")
         return {"error": f"Failed to fetch weather data: {str(e)}"}
 
 def generate_summary(events, weather):
@@ -352,24 +325,17 @@ def generate_summary(events, weather):
         
         # Check if we have any events
         if events:
-            # Check if events are in the MCP format or the OAuth format
-            if isinstance(events[0], dict) and 'formattedTime' in events[0]:
-                # MCP format - already formatted nicely
-                for event in events:
-                    events_text += f"- {event['summary']} at {event['formattedTime']}\n"
-            else:
-                # Original OAuth format - needs parsing
-                for event in events:
-                    start_time = event.get("start", {}).get("dateTime", "")
-                    if start_time:
-                        try:
-                            # Parse and format the time
-                            dt = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                            formatted_time = dt.strftime("%I:%M %p")
-                        except:
-                            formatted_time = start_time
-                        
-                        events_text += f"- {event['summary']} at {formatted_time}\n"
+            for event in events:
+                start_time = event.get("start", {}).get("dateTime", "")
+                if start_time:
+                    try:
+                        # Parse and format the time
+                        dt = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        formatted_time = dt.strftime("%I:%M %p")
+                    except:
+                        formatted_time = start_time
+                    
+                    events_text += f"- {event['summary']} at {formatted_time}\n"
         
         # Format weather for the prompt
         weather_text = "Weather information not available."
@@ -397,7 +363,7 @@ Date: {datetime.datetime.now().strftime('%A, %B %d')}
 Weather: {weather_text}
 Events: {events_text if events_text else no_events_reason}
 
-Make it ENERGETIC, upbeat and SHORT (max 100 words) in English. DO NOT use any emojis. Include all the details about the weather at {LOCATION} and all events from the Google Calendar for today."""
+Focus specifically on providing accurate details about today's weather in {LOCATION} and list all the events from the Google Calendar. DO NOT use any emojis. Make the summary SHORT (max 100 words) but include ALL weather and calendar information."""
         
         logger.debug("Sending request to OpenAI API")
         logger.debug(f"Prompt details - Events present: {bool(events_text)}, Weather available: {weather_text != 'Weather information not available.'}")
@@ -448,16 +414,14 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words) in English. DO NOT use any e
             logger.error(f"OpenAI API error: {openai_error}")
             # Try fallback to a simpler message
             return f"""
-            GOOD MORNING!! 
+            Good morning! 
             
-            It's {datetime.datetime.now().strftime('%A, %B %d, %Y')}!
-            
-            I couldn't generate your full summary due to an API error, but I hope you have an AMAZING day anyway!
+            It's {datetime.datetime.now().strftime('%A, %B %d, %Y')}.
             
             Weather in {LOCATION}: {weather_text}
-            Today's events: {events_text if events_text else "Could not retrieve calendar events or you have no events scheduled today."}
+            Today's events: {events_text if events_text else no_events_reason}
             
-            Error details: {str(openai_error)}
+            I couldn't generate your full personalized summary due to an API error.
             """
     except Exception as e:
         logger.error(f"Error generating summary: {e}")

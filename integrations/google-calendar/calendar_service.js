@@ -2,80 +2,111 @@ const { google } = require('googleapis');
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * A service class for interacting with Google Calendar
+ */
 class GoogleCalendarService {
+  /**
+   * Create a new GoogleCalendarService
+   * @param {string} configPath - Path to the calendar config file
+   */
   constructor(configPath) {
     this.configPath = configPath || path.join(__dirname, 'calendar_config.json');
+    this.calendarId = 'primary'; // Always use primary as the default
+    this.oAuth2Client = null;
     this.initialized = false;
-    this.auth = null;
-    this.calendar = null;
   }
 
   /**
-   * Initialize the Google Calendar service
+   * Initialize the OAuth2 client
+   * @returns {boolean} - Whether initialization was successful
    */
-  async initialize() {
+  initialize() {
     try {
-      // Check if config file exists
       if (!fs.existsSync(this.configPath)) {
-        throw new Error(`Configuration file not found at ${this.configPath}. Please run getToken.js first.`);
+        console.error(`Calendar config file not found at ${this.configPath}`);
+        return false;
       }
 
-      // Read config
       const config = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
       
-      // Create OAuth2 client
-      this.auth = new google.auth.OAuth2(
-        config.client_id,
-        config.client_secret,
-        config.redirect_uri
+      if (!config.installed) {
+        console.error('Invalid config file: missing "installed" properties');
+        return false;
+      }
+
+      const { client_id, client_secret, redirect_uris } = config.installed;
+      
+      // Create OAuth client
+      this.oAuth2Client = new google.auth.OAuth2(
+        client_id,
+        client_secret,
+        redirect_uris[0]
       );
 
-      // Set credentials
-      this.auth.setCredentials({
-        refresh_token: config.refresh_token
-      });
-
-      // Create calendar client
-      this.calendar = google.calendar({ version: 'v3', auth: this.auth });
-      this.initialized = true;
-      
-      return true;
+      // Set credentials if we have tokens
+      if (config.tokens) {
+        console.log('Setting credentials from config tokens');
+        this.oAuth2Client.setCredentials(config.tokens);
+        this.initialized = true;
+        return true;
+      } else {
+        console.error('No tokens found in config file');
+        return false;
+      }
     } catch (error) {
-      console.error('Error initializing Google Calendar service:', error);
-      throw error;
+      console.error('Error initializing calendar service:', error);
+      return false;
     }
   }
 
   /**
-   * Get today's events
+   * Get today's events from Google Calendar
+   * @returns {Promise<Array>} - A promise that resolves to an array of events
    */
   async getTodayEvents() {
-    if (!this.initialized) {
-      await this.initialize();
+    if (!this.initialized && !this.initialize()) {
+      throw new Error('Calendar service not initialized');
     }
 
+    // Set up date range for today
+    const now = new Date();
+    const startOfDay = new Date(now.setHours(0, 0, 0, 0));
+    const endOfDay = new Date(now.setHours(23, 59, 59, 999));
+
+    // Create calendar API client
+    const calendar = google.calendar({ version: 'v3', auth: this.oAuth2Client });
+
     try {
-      // Calculate today's start and end
-      const today = new Date();
-      const startOfDay = new Date(today);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(today);
-      endOfDay.setHours(23, 59, 59, 999);
-
-      // Format dates for Google Calendar API
-      const timeMin = startOfDay.toISOString();
-      const timeMax = endOfDay.toISOString();
-
-      // Get events
-      const response = await this.calendar.events.list({
-        calendarId: 'primary',
-        timeMin: timeMin,
-        timeMax: timeMax,
+      // Get events for today
+      const response = await calendar.events.list({
+        calendarId: this.calendarId,
+        timeMin: startOfDay.toISOString(),
+        timeMax: endOfDay.toISOString(),
         singleEvents: true,
         orderBy: 'startTime',
       });
 
-      return response.data.items || [];
+      const events = response.data.items || [];
+      return events.map(event => {
+        // Format the event to a simpler structure
+        const startDateTime = event.start.dateTime || event.start.date;
+        const endDateTime = event.end.dateTime || event.end.date;
+        
+        // Format time for display
+        let formattedTime = 'All day';
+        if (startDateTime && startDateTime.includes('T')) {
+          const date = new Date(startDateTime);
+          formattedTime = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+        
+        return {
+          summary: event.summary || 'Untitled Event',
+          start: startDateTime,
+          end: endDateTime,
+          formattedTime
+        };
+      });
     } catch (error) {
       console.error('Error getting today\'s events:', error);
       throw error;

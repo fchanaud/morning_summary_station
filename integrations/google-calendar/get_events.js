@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 
-const GoogleCalendarService = require('./calendar_service');
 const path = require('path');
+const GoogleCalendarService = require('./calendar_service');
 
-// Create a directory-independent config path
+// Create an instance of the calendar service
 const configPath = path.join(__dirname, 'calendar_config.json');
-
-// Create an instance of the service
 const calendarService = new GoogleCalendarService(configPath);
 
-// Get today's events
+/**
+ * Get today's events and print them as JSON
+ */
 async function getTodayEvents() {
   try {
-    // Initialize the calendar service
-    await calendarService.initialize();
+    // Initialize the service
+    if (!calendarService.initialize()) {
+      console.error('Failed to initialize calendar service');
+      process.exit(1);
+    }
     
-    // Get today's events
+    // Get events
     const events = await calendarService.getTodayEvents();
     
-    // Format the events
-    const formattedEvents = calendarService.formatEvents(events);
-    
-    // Output as JSON
-    console.log(JSON.stringify(formattedEvents));
+    // Print events as JSON (for the Python app to read)
+    console.log(JSON.stringify(events));
   } catch (error) {
     console.error('Error getting today\'s events:', error);
     process.exit(1);
