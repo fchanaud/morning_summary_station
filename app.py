@@ -106,8 +106,22 @@ def get_credentials():
             with open(TOKEN_PATH, 'rb') as token:
                 creds = pickle.load(token)
             logger.info("Successfully loaded credentials from token file")
+            
+            # Additional check for credential validity - force refresh if close to expiry
+            if creds and hasattr(creds, 'expiry'):
+                now = datetime.datetime.now()
+                expiry = creds.expiry
+                # If expiry is less than 1 hour away, try to refresh
+                if expiry and (expiry - now).total_seconds() < 3600:
+                    logger.info("Credentials close to expiry, attempting refresh")
+                    creds.refresh(Request())
+                    # Save refreshed credentials
+                    with open(TOKEN_PATH, 'wb') as token:
+                        pickle.dump(creds, token)
+                    logger.info("Refreshed and saved credentials")
+            
         except Exception as e:
-            logger.error(f"Error loading credentials from token file: {e}")
+            logger.error(f"Error loading or refreshing credentials from token file: {e}")
             creds = None
     else:
         logger.info(f"Token file not found at {TOKEN_PATH}")
@@ -119,6 +133,11 @@ def get_credentials():
             try:
                 creds.refresh(Request())
                 logger.info("Successfully refreshed credentials")
+                
+                # Save the refreshed credentials
+                with open(TOKEN_PATH, 'wb') as token:
+                    pickle.dump(creds, token)
+                logger.info("Saved refreshed credentials")
             except Exception as e:
                 logger.error(f"Error refreshing credentials: {e}")
                 creds = None
@@ -317,22 +336,13 @@ def generate_summary(events, weather):
             day_condition = daily["Day"]["IconPhrase"]
             weather_text += f"Today's forecast: {day_condition} with temperatures between {min_temp}°C and {max_temp}°C."
         
-        # Create the prompt for the AI - making it LOUD and enthusiastic!
-        prompt = f"""
-        Create a LOUD, ENTHUSIASTIC, and FRIENDLY morning summary for someone in {LOCATION}.
-        
-        Today's Date: {datetime.datetime.now().strftime('%A, %B %d, %Y')}
-        
-        Weather:
-        {weather_text}
-        
-        Today's Events:
-        {events_text if events_text else 'No events scheduled for today.'}
-        
-        Make the summary LOUD (use capital letters for emphasis), high-energy, motivational, and uplifting.
-        Use lots of exclamation marks! Be VERY excited about the day ahead!
-        Keep it concise (around 150 words). Include specific references to the weather and events.
-        """
+        # Create a more concise prompt for the AI to reduce token usage
+        prompt = f"""Create a brief but enthusiastic morning summary for someone in {LOCATION}.
+Date: {datetime.datetime.now().strftime('%A, %B %d')}
+Weather: {weather_text}
+Events: {events_text if events_text else 'No events today.'}
+
+Make it ENERGETIC, upbeat and SHORT (max 100 words). Use CAPS for emphasis. Include weather and events info."""
         
         logger.debug("Sending request to OpenAI API")
         
@@ -342,20 +352,38 @@ def generate_summary(events, weather):
             return "Error: OpenAI API key not configured. Please check your environment variables."
         
         try:
-            # Using the older OpenAI API format (v0.28.1)
-            response = openai.Completion.create(
-                engine="text-davinci-003",  # Use engine instead of model for older API
-                prompt=prompt,
-                temperature=0.7,
-                max_tokens=500,
-                top_p=1,
-                frequency_penalty=0,
-                presence_penalty=0
-            )
+            # First try with ChatCompletion (newer API version)
+            try:
+                # Try the ChatCompletion API (newer model)
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are an enthusiastic personal assistant that creates brief, energetic morning summaries."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=250,  # Reduced from 500 to save costs
+                    top_p=1,
+                    frequency_penalty=0,
+                    presence_penalty=0
+                )
+                summary = response.choices[0].message.content.strip()
+                logger.debug(f"Generated summary with gpt-3.5-turbo, length: {len(summary)}")
+            except (AttributeError, TypeError) as e:
+                # Fall back to the older Completion API if ChatCompletion isn't available
+                logger.warning(f"ChatCompletion API not available: {e}. Falling back to Completion API")
+                response = openai.Completion.create(
+                    model="gpt-3.5-turbo-instruct",  # Use the instruct model which is similar to text-davinci-003
+                    prompt=prompt,
+                    temperature=0.7,
+                    max_tokens=250,
+                    top_p=1,
+                    frequency_penalty=0,
+                    presence_penalty=0
+                )
+                summary = response.choices[0].text.strip()
+                logger.debug(f"Generated summary with gpt-3.5-turbo-instruct, length: {len(summary)}")
             
-            # Extract and return the generated text
-            summary = response.choices[0].text.strip()
-            logger.debug(f"Generated summary of length {len(summary)}")
             return summary
             
         except Exception as openai_error:
@@ -461,6 +489,12 @@ def oauth2callback():
             flow.fetch_token(authorization_response=authorization_response)
             creds = flow.credentials
             logger.info("Successfully obtained credentials from OAuth flow")
+            
+            # Ensure we request a refresh token to avoid future auth requirements
+            if not creds.refresh_token:
+                logger.warning("No refresh token in credentials, future reauthorization may be required")
+            else:
+                logger.info("Refresh token obtained, which should prevent future auth prompts")
             
             # Clean up the used flow
             if state in oauth_flows:
