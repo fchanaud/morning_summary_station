@@ -237,14 +237,22 @@ def get_calendar_events():
                 
                 return transformed_events
             except Exception as e:
-                logger.warning(f"MCP calendar integration failed: {e}, falling back to OAuth")
                 if hasattr(e, 'stderr') and e.stderr:
                     logger.warning(f"Calendar script stderr: {e.stderr}")
+                logger.warning(f"MCP calendar integration failed: {e}, falling back to OAuth")
                 # Fall back to OAuth method
                 pass
         
         # Original OAuth method as fallback
         logger.info("Using OAuth method for calendar events")
+        
+        # Make sure we have a valid calendar ID (not "www")
+        if GOOGLE_CALENDAR_ID == "www":
+            logger.warning("Invalid calendar ID 'www' detected, using 'primary' instead")
+            calendar_id = "primary"
+        else:
+            calendar_id = GOOGLE_CALENDAR_ID
+        
         # Get credentials
         creds = get_credentials()
         
@@ -263,7 +271,7 @@ def get_calendar_events():
         
         # Call the Calendar API
         events_result = service.events().list(
-            calendarId=GOOGLE_CALENDAR_ID,
+            calendarId=calendar_id,
             timeMin=today_start,
             timeMax=today_end,
             singleEvents=True,
@@ -389,7 +397,7 @@ Date: {datetime.datetime.now().strftime('%A, %B %d')}
 Weather: {weather_text}
 Events: {events_text if events_text else no_events_reason}
 
-Make it ENERGETIC, upbeat and SHORT (max 100 words). Include all the details about the weather at {LOCATION} ({ADDRESS}) and all events from the Google Calendar for today."""
+Make it ENERGETIC, upbeat and SHORT (max 100 words) in English. DO NOT use any emojis. Include all the details about the weather at {LOCATION} and all events from the Google Calendar for today."""
         
         logger.debug("Sending request to OpenAI API")
         logger.debug(f"Prompt details - Events present: {bool(events_text)}, Weather available: {weather_text != 'Weather information not available.'}")
@@ -406,7 +414,7 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words). Include all the details abo
                 response = openai.ChatCompletion.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are an enthusiastic personal assistant that creates brief, energetic morning summaries. You must include all weather information and all calendar events in your summary."},
+                        {"role": "system", "content": "You are an enthusiastic personal assistant that creates brief, energetic morning summaries in English. You must NOT use any emojis in your summaries. You must include all weather information and all calendar events in your summary."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
@@ -422,7 +430,7 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words). Include all the details abo
                 logger.warning(f"ChatCompletion API not available: {e}. Falling back to Completion API")
                 response = openai.Completion.create(
                     model="gpt-3.5-turbo-instruct",  # Use the instruct model which is similar to text-davinci-003
-                    prompt=f"""You are an enthusiastic personal assistant that creates brief, energetic morning summaries. You must include all weather information and all calendar events in your summary.
+                    prompt=f"""You are an enthusiastic personal assistant that creates brief, energetic morning summaries in English. You must NOT use any emojis in your summaries. You must include all weather information and all calendar events in your summary.
 
 {prompt}""",
                     temperature=0.7,
@@ -446,7 +454,7 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words). Include all the details abo
             
             I couldn't generate your full summary due to an API error, but I hope you have an AMAZING day anyway!
             
-            Weather in {LOCATION} ({ADDRESS}): {weather_text}
+            Weather in {LOCATION}: {weather_text}
             Today's events: {events_text if events_text else "Could not retrieve calendar events or you have no events scheduled today."}
             
             Error details: {str(openai_error)}
@@ -684,15 +692,18 @@ def get_text_summary():
             return jsonify({"error": "AccuWeather API key is not configured"}), 500
         
         # Get calendar events with error handling
+        calendar_error = False
         try:
             events = get_calendar_events()
             if events:
                 logger.info(f"Retrieved {len(events)} calendar events")
             else:
                 logger.warning("No calendar events retrieved or error occurred")
+                calendar_error = True
         except Exception as e:
             logger.error(f"Error retrieving calendar events: {e}")
             events = []
+            calendar_error = True
         
         # Check if we need authorization
         if not events and not os.path.exists(TOKEN_PATH):
@@ -735,13 +746,30 @@ If you see a warning about the app not being verified, click "Advanced" and then
                 return jsonify({"error": f"Authentication error: {str(auth_err)}"}), 500
         
         # Get weather data with error handling
+        weather_error = False
         try:
             weather = get_weather_data()
             if weather.get("error"):
                 logger.warning(f"Weather API returned an error: {weather['error']}")
+                weather_error = True
         except Exception as e:
             logger.error(f"Error retrieving weather data: {e}")
             weather = {"error": str(e)}
+            weather_error = True
+        
+        # If both calendar and weather failed, return a simple response instead of calling OpenAI
+        if calendar_error and weather_error:
+            logger.warning("Both calendar and weather data fetch failed, returning simple response")
+            return f"""
+            Good morning!
+            
+            Today is {datetime.datetime.now().strftime('%A, %B %d, %Y')}.
+            
+            Weather information is currently unavailable.
+            Your calendar events could not be retrieved at this time.
+            
+            Please try again later.
+            """
         
         # Generate summary with error handling
         try:
