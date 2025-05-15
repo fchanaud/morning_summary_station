@@ -1,0 +1,23 @@
+{
+  "name": "morning-summary-station",
+  "version": "1.0.0",
+  "description": "A morning summary station that provides personalized summaries including calendar events",
+  "main": "app.py",
+  "scripts": {
+    "start": "python app.py",
+    "auth-calendar": "node integrations/google-calendar/getToken.js"
+  },
+  "dependencies": {
+    "googleapis": "^126.0.1",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fchanaud/morning_summary_station.git"
+  },
+  "author": "fchanaud",
+  "license": "MIT"
+} 

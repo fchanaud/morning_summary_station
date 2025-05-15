@@ -188,9 +188,48 @@ def get_credentials():
 def get_calendar_events():
     """
     Fetch calendar events from Google Calendar for today.
-    Requires the Google Calendar API credentials to be set up.
+    First tries to use the MCP integration, falls back to OAuth if that fails.
     """
     try:
+        # Try to use the MCP integration first
+        import subprocess
+        import json
+        import os
+        
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                                 "integrations/google-calendar/get_events.js")
+        
+        # Check if the script exists and use it if possible
+        if os.path.exists(script_path):
+            try:
+                result = subprocess.run(["node", script_path], 
+                                      capture_output=True, text=True, check=True)
+                events = json.loads(result.stdout)
+                logger.info(f"Successfully retrieved {len(events)} events from MCP calendar integration")
+                
+                # Transform events to match expected format
+                transformed_events = []
+                for event in events:
+                    # Convert to the format expected by the rest of the code
+                    transformed_event = {
+                        "summary": event.get("summary", "Untitled Event"),
+                        "start": {
+                            "dateTime": event.get("start")
+                        },
+                        "end": {
+                            "dateTime": event.get("end")
+                        }
+                    }
+                    transformed_events.append(transformed_event)
+                
+                return transformed_events
+            except Exception as e:
+                logger.warning(f"MCP calendar integration failed: {e}, falling back to OAuth")
+                # Fall back to OAuth method
+                pass
+        
+        # Original OAuth method as fallback
+        logger.info("Using OAuth method for calendar events")
         # Get credentials
         creds = get_credentials()
         
@@ -220,7 +259,7 @@ def get_calendar_events():
         
         return events
     except Exception as e:
-        print(f"Error fetching calendar events: {e}")
+        logger.error(f"Error fetching calendar events: {e}")
         # If we hit an auth error, we might need to refresh
         # For simplicity, return mock data for now if there's an error
         today = datetime.datetime.now().date()
@@ -304,17 +343,27 @@ def generate_summary(events, weather):
     try:
         # Format events for the prompt
         events_text = ""
-        for event in events:
-            start_time = event.get("start", {}).get("dateTime", "")
-            if start_time:
-                try:
-                    # Parse and format the time
-                    dt = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                    formatted_time = dt.strftime("%I:%M %p")
-                except:
-                    formatted_time = start_time
-                
-                events_text += f"- {event['summary']} at {formatted_time}\n"
+        
+        # Check if we have any events
+        if events:
+            # Check if events are in the MCP format or the OAuth format
+            if isinstance(events[0], dict) and 'formattedTime' in events[0]:
+                # MCP format - already formatted nicely
+                for event in events:
+                    events_text += f"- {event['summary']} at {event['formattedTime']}\n"
+            else:
+                # Original OAuth format - needs parsing
+                for event in events:
+                    start_time = event.get("start", {}).get("dateTime", "")
+                    if start_time:
+                        try:
+                            # Parse and format the time
+                            dt = datetime.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                            formatted_time = dt.strftime("%I:%M %p")
+                        except:
+                            formatted_time = start_time
+                        
+                        events_text += f"- {event['summary']} at {formatted_time}\n"
         
         # Format weather for the prompt
         weather_text = "Weather information not available."
@@ -686,6 +735,42 @@ If you see a warning about the app not being verified, click "Advanced" and then
         
     except Exception as e:
         logger.error(f"Unhandled exception in text_summary endpoint: {e}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+# Add a new route for using the MCP calendar service directly
+@app.route('/api/calendar_events', methods=['GET'])
+def get_calendar_events_direct():
+    """API endpoint to get calendar events directly using the MCP service"""
+    try:
+        logger.info("Received request to /api/calendar_events")
+        
+        # Run the Node.js script to get calendar events
+        import subprocess
+        import json
+        import os
+        
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                                 "integrations/google-calendar/get_events.js")
+        
+        # Check if the script exists
+        if not os.path.exists(script_path):
+            logger.error(f"Calendar script not found at {script_path}")
+            return jsonify({"error": "Calendar integration not set up"}), 500
+        
+        # Execute the Node.js script
+        try:
+            result = subprocess.run(["node", script_path], 
+                                  capture_output=True, text=True, check=True)
+            events = json.loads(result.stdout)
+            logger.info(f"Successfully retrieved {len(events)} events from calendar")
+            return jsonify(events)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error executing calendar script: {e}")
+            logger.error(f"Script output: {e.stderr}")
+            return jsonify({"error": "Failed to get calendar events"}), 500
+        
+    except Exception as e:
+        logger.error(f"Unhandled exception in calendar_events endpoint: {e}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 if __name__ == '__main__':
