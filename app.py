@@ -45,9 +45,17 @@ if os.getenv('RENDER'):
     # On Render, use a persistent volume path if available, otherwise fall back to tmp
     TOKEN_PATH = os.getenv('PERSISTENT_STORAGE_DIR', '/tmp') + '/token.pickle'
     logger.info(f"Running on Render, token path: {TOKEN_PATH}")
+
+    # Set the redirect URI for production environment
+    REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://morning-summary-station.onrender.com/oauth2callback')
+    logger.info(f"Using production redirect URI: {REDIRECT_URI}")
 else:
     TOKEN_PATH = 'token.pickle'
     logger.info(f"Running locally, token path: {TOKEN_PATH}")
+    
+    # Set the redirect URI for local development
+    REDIRECT_URI = os.getenv('REDIRECT_URI', 'http://localhost:5000/oauth2callback')
+    logger.info(f"Using local redirect URI: {REDIRECT_URI}")
 
 # OAuth 2.0 Client Configuration
 CLIENT_CONFIG = {
@@ -56,13 +64,15 @@ CLIENT_CONFIG = {
         'client_secret': os.getenv('GOOGLE_CLIENT_SECRET'),
         'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
         'token_uri': 'https://oauth2.googleapis.com/token',
-        'redirect_uris': [os.getenv('REDIRECT_URI', 'http://localhost:5000/oauth2callback')]
+        'redirect_uris': [REDIRECT_URI]
     }
 }
 
 # Check if OAuth credentials are properly configured
 if not CLIENT_CONFIG['web']['client_id'] or not CLIENT_CONFIG['web']['client_secret']:
     logger.warning("Google OAuth client credentials not properly configured!")
+
+logger.info(f"Configured OAuth redirect URI: {CLIENT_CONFIG['web']['redirect_uris'][0]}")
 
 # If modifying these scopes, delete the token.pickle file
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -385,15 +395,71 @@ def index():
 def oauth2callback():
     """Handle OAuth callback"""
     try:
+        logger.info("OAuth callback received with URL: " + request.url)
+        
         # Get flow from session
         flow = session.get('flow')
         if not flow:
             logger.error("No flow found in session during OAuth callback")
-            return "Authentication failed. Please restart the app."
+            
+            # Create a new flow for the callback
+            try:
+                flow = Flow.from_client_config(
+                    CLIENT_CONFIG,
+                    SCOPES,
+                    redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
+                )
+                logger.info("Created new flow for OAuth callback")
+            except Exception as flow_error:
+                logger.error(f"Failed to create new flow: {flow_error}")
+                return f"""
+                <html>
+                    <head>
+                        <title>Authentication Error</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }}
+                            h1 {{ color: #F44336; }}
+                            pre {{ background: #f5f5f5; padding: 10px; text-align: left; overflow: auto; }}
+                        </style>
+                    </head>
+                    <body>
+                        <h1>Authentication Failed</h1>
+                        <p>No authentication flow was found in your session, and we couldn't create a new one.</p>
+                        <p>Please try again by returning to the main page and starting over.</p>
+                        <p>Error details: {str(flow_error)}</p>
+                    </body>
+                </html>
+                """
         
         # Complete OAuth flow
-        flow.fetch_token(authorization_response=request.url)
-        creds = flow.credentials
+        try:
+            authorization_response = request.url
+            logger.info(f"Processing authorization response: {authorization_response[:100]}...")
+            
+            flow.fetch_token(authorization_response=authorization_response)
+            creds = flow.credentials
+            logger.info("Successfully obtained credentials from OAuth flow")
+        except Exception as token_error:
+            logger.error(f"Error fetching token: {token_error}")
+            return f"""
+            <html>
+                <head>
+                    <title>Authentication Error</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }}
+                        h1 {{ color: #F44336; }}
+                        pre {{ background: #f5f5f5; padding: 10px; text-align: left; overflow: auto; }}
+                    </style>
+                </head>
+                <body>
+                    <h1>Authentication Error</h1>
+                    <p>There was an error processing your authentication:</p>
+                    <pre>{str(token_error)}</pre>
+                    <p>Please try again. If the problem persists, contact the administrator.</p>
+                    <p><a href="/">Return to home page</a></p>
+                </body>
+            </html>
+            """
         
         # Save credentials
         try:
@@ -402,7 +468,24 @@ def oauth2callback():
             logger.info("Successfully saved credentials to token file")
         except Exception as token_save_error:
             logger.error(f"Error saving token: {token_save_error}")
-            return f"Error saving credentials: {str(token_save_error)}"
+            return f"""
+            <html>
+                <head>
+                    <title>Authentication Warning</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }}
+                        h1 {{ color: #FF9800; }}
+                    </style>
+                </head>
+                <body>
+                    <h1>Authentication Partially Successful</h1>
+                    <p>You were authenticated successfully, but we couldn't save your credentials for future use.</p>
+                    <p>Error details: {str(token_save_error)}</p>
+                    <p>You may need to authenticate again next time.</p>
+                    <p><a href="/api/text_summary">Continue to your summary</a></p>
+                </body>
+            </html>
+            """
         
         # Remove flow from session to avoid serialization errors
         session.pop('flow', None)
@@ -416,12 +499,22 @@ def oauth2callback():
                     body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }
                     h1 { color: #4CAF50; }
                     p { font-size: 18px; }
+                    .button { 
+                        display: inline-block; 
+                        background-color: #4CAF50; 
+                        color: white; 
+                        padding: 10px 20px; 
+                        text-decoration: none; 
+                        border-radius: 4px; 
+                        margin-top: 20px; 
+                    }
                 </style>
             </head>
             <body>
                 <h1>Authentication Successful!</h1>
                 <p>You can close this window and use your iPhone shortcut now.</p>
                 <p>Your Morning Summary Station is ready to go!</p>
+                <a href="/api/text_summary" class="button">Get Your Summary Now</a>
             </body>
         </html>
         """
@@ -432,10 +525,10 @@ def oauth2callback():
             <head>
                 <title>Authentication Error</title>
                 <style>
-                    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }
-                    h1 { color: #F44336; }
-                    p { font-size: 18px; }
-                    .error { background: #ffebee; padding: 10px; border-radius: 5px; }
+                    body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }}
+                    h1 {{ color: #F44336; }}
+                    p {{ font-size: 18px; }}
+                    .error {{ background: #ffebee; padding: 10px; border-radius: 5px; }}
                 </style>
             </head>
             <body>
@@ -443,6 +536,7 @@ def oauth2callback():
                 <p>There was an error during authentication:</p>
                 <p class="error">{str(e)}</p>
                 <p>Please try again later.</p>
+                <p><a href="/">Return to home page</a></p>
             </body>
         </html>
         """
