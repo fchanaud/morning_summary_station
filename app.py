@@ -2,6 +2,7 @@ import os
 import json
 import pickle
 import datetime
+import logging
 from flask import Flask, jsonify, request, redirect, url_for, session
 import requests
 from dotenv import load_dotenv
@@ -11,11 +12,18 @@ from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 import openai  # Import the openai module instead of specific class
 
+# Set up logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)  # Needed for OAuth sessions
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))  # Needed for OAuth sessions
 
 # API keys from environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -24,11 +32,22 @@ LOCATION = os.getenv("LOCATION", "London")
 ADDRESS = os.getenv("ADDRESS", "16 acer road, dalston - E83GX")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 
+# Log configuration at startup (excluding sensitive values)
+logger.info(f"Starting with: LOCATION={LOCATION}, ADDRESS={ADDRESS}, GOOGLE_CALENDAR_ID={GOOGLE_CALENDAR_ID}")
+logger.info(f"OpenAI API Key configured: {'Yes' if OPENAI_API_KEY else 'No'}")
+logger.info(f"AccuWeather API Key configured: {'Yes' if ACCUWEATHER_API_KEY else 'No'}")
+
 # Configure the OpenAI API key
 openai.api_key = OPENAI_API_KEY
 
-# Path to store token
-TOKEN_PATH = 'token.pickle'
+# Path to store token - check if using Render and use appropriate path
+if os.getenv('RENDER'):
+    # On Render, use a persistent volume path if available, otherwise fall back to tmp
+    TOKEN_PATH = os.getenv('PERSISTENT_STORAGE_DIR', '/tmp') + '/token.pickle'
+    logger.info(f"Running on Render, token path: {TOKEN_PATH}")
+else:
+    TOKEN_PATH = 'token.pickle'
+    logger.info(f"Running locally, token path: {TOKEN_PATH}")
 
 # OAuth 2.0 Client Configuration
 CLIENT_CONFIG = {
@@ -41,6 +60,10 @@ CLIENT_CONFIG = {
     }
 }
 
+# Check if OAuth credentials are properly configured
+if not CLIENT_CONFIG['web']['client_id'] or not CLIENT_CONFIG['web']['client_secret']:
+    logger.warning("Google OAuth client credentials not properly configured!")
+
 # If modifying these scopes, delete the token.pickle file
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
@@ -51,36 +74,68 @@ def get_credentials():
     the OAuth2 flow is completed to obtain the new credentials.
     """
     creds = None
+    
+    # Make sure the token directory exists
+    token_dir = os.path.dirname(TOKEN_PATH)
+    if token_dir and not os.path.exists(token_dir):
+        try:
+            os.makedirs(token_dir)
+            logger.info(f"Created token directory: {token_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create token directory: {e}")
 
     # Try to load credentials from file
     if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, 'rb') as token:
-            creds = pickle.load(token)
+        try:
+            with open(TOKEN_PATH, 'rb') as token:
+                creds = pickle.load(token)
+            logger.info("Successfully loaded credentials from token file")
+        except Exception as e:
+            logger.error(f"Error loading credentials from token file: {e}")
+            creds = None
+    else:
+        logger.info(f"Token file not found at {TOKEN_PATH}")
 
     # If there are no (valid) credentials available, let the user log in
     if not creds or not creds.valid:
+        logger.info("Credentials not valid, starting OAuth flow")
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+                logger.info("Successfully refreshed credentials")
+            except Exception as e:
+                logger.error(f"Error refreshing credentials: {e}")
+                creds = None
         else:
-            flow = Flow.from_client_config(
-                CLIENT_CONFIG,
-                SCOPES,
-                redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
-            )
-            auth_url, _ = flow.authorization_url(
-                access_type='offline',
-                include_granted_scopes='true',
-                prompt='consent'
-            )
-            print(f"Please go to this URL to authorize access: {auth_url}")
-            
-            # Store flow in session for callback
-            session['flow'] = flow
-            return None
+            try:
+                flow = Flow.from_client_config(
+                    CLIENT_CONFIG,
+                    SCOPES,
+                    redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
+                )
+                auth_url, _ = flow.authorization_url(
+                    access_type='offline',
+                    include_granted_scopes='true',
+                    prompt='consent'
+                )
+                logger.info(f"Generated authorization URL: {auth_url[:50]}...")
+                print(f"Please go to this URL to authorize access: {auth_url}")
+                
+                # Store flow in session for callback
+                session['flow'] = flow
+                return None
+            except Exception as e:
+                logger.error(f"Error setting up OAuth flow: {e}")
+                # Return None to indicate auth is needed
+                return None
         
         # Save the credentials for the next run
-        with open(TOKEN_PATH, 'wb') as token:
-            pickle.dump(creds, token)
+        try:
+            with open(TOKEN_PATH, 'wb') as token:
+                pickle.dump(creds, token)
+            logger.info(f"Saved credentials to {TOKEN_PATH}")
+        except Exception as e:
+            logger.error(f"Error saving credentials: {e}")
     
     return creds
 
@@ -252,21 +307,44 @@ def generate_summary(events, weather):
         Keep it concise (around 150 words). Include specific references to the weather and events.
         """
         
-        # Use the older OpenAI API format
-        response = openai.Completion.create(
-            model="text-davinci-003",
-            prompt=prompt,
-            temperature=0.7,
-            max_tokens=500,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0
-        )
+        logger.debug("Sending request to OpenAI API")
         
-        # Extract and return the generated text
-        return response.choices[0].text.strip()
+        # Verify openai.api_key is set
+        if not openai.api_key:
+            logger.error("OpenAI API key not configured")
+            return "Error: OpenAI API key not configured. Please check your environment variables."
+        
+        try:
+            # Using the older OpenAI API format (v0.28.1)
+            response = openai.Completion.create(
+                engine="text-davinci-003",  # Use engine instead of model for older API
+                prompt=prompt,
+                temperature=0.7,
+                max_tokens=500,
+                top_p=1,
+                frequency_penalty=0,
+                presence_penalty=0
+            )
+            
+            # Extract and return the generated text
+            summary = response.choices[0].text.strip()
+            logger.debug(f"Generated summary of length {len(summary)}")
+            return summary
+            
+        except Exception as openai_error:
+            logger.error(f"OpenAI API error: {openai_error}")
+            # Try fallback to a simpler message
+            return f"""
+            GOOD MORNING!! 
+            
+            It's {datetime.datetime.now().strftime('%A, %B %d, %Y')}!
+            
+            I couldn't generate your full summary due to an API error, but I hope you have an AMAZING day anyway!
+            
+            Error details: {str(openai_error)}
+            """
     except Exception as e:
-        print(f"Error generating summary: {e}")
+        logger.error(f"Error generating summary: {e}")
         return f"Sorry, I couldn't generate your morning summary: {str(e)}"
 
 @app.route('/')
@@ -320,22 +398,59 @@ def oauth2callback():
 @app.route('/api/text_summary', methods=['GET'])
 def get_text_summary():
     """API endpoint to get just the text summary for Shortcuts integration"""
-    events = get_calendar_events()
-    
-    # If authorization is needed, redirect to auth URL
-    if not events and 'flow' in session:
-        flow = session.get('flow')
-        auth_url, _ = flow.authorization_url(
-            access_type='offline',
-            include_granted_scopes='true',
-            prompt='consent'
-        )
-        return jsonify({"auth_required": True, "auth_url": auth_url})
-    
-    weather = get_weather_data()
-    summary = generate_summary(events, weather)
-    
-    return summary
+    try:
+        logger.info("Received request to /api/text_summary")
+        
+        # Verify API keys are available
+        if not OPENAI_API_KEY:
+            logger.error("OpenAI API key is not configured")
+            return jsonify({"error": "OpenAI API key is not configured"}), 500
+            
+        if not ACCUWEATHER_API_KEY:
+            logger.error("AccuWeather API key is not configured")
+            return jsonify({"error": "AccuWeather API key is not configured"}), 500
+        
+        # Get calendar events with error handling
+        try:
+            events = get_calendar_events()
+            logger.info(f"Retrieved {len(events)} calendar events")
+        except Exception as e:
+            logger.error(f"Error retrieving calendar events: {e}")
+            events = []
+        
+        # If authorization is needed, redirect to auth URL
+        if not events and 'flow' in session:
+            flow = session.get('flow')
+            auth_url, _ = flow.authorization_url(
+                access_type='offline',
+                include_granted_scopes='true',
+                prompt='consent'
+            )
+            logger.info(f"Auth required, redirecting to Google OAuth")
+            return jsonify({"auth_required": True, "auth_url": auth_url})
+        
+        # Get weather data with error handling
+        try:
+            weather = get_weather_data()
+            if weather.get("error"):
+                logger.warning(f"Weather API returned an error: {weather['error']}")
+        except Exception as e:
+            logger.error(f"Error retrieving weather data: {e}")
+            weather = {"error": str(e)}
+        
+        # Generate summary with error handling
+        try:
+            summary = generate_summary(events, weather)
+            logger.info("Summary generated successfully")
+        except Exception as e:
+            logger.error(f"Error generating summary: {e}")
+            return jsonify({"error": f"Failed to generate summary: {str(e)}"}), 500
+        
+        return summary
+        
+    except Exception as e:
+        logger.error(f"Unhandled exception in text_summary endpoint: {e}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000) 

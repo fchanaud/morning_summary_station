@@ -25,4 +25,10 @@ services:
         sync: false
       - key: REDIRECT_URI
         sync: false
+      - key: RENDER
+        value: true
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: PERSISTENT_STORAGE_DIR
+        value: /tmp
     autoDeploy: true 
