@@ -2,10 +2,13 @@ services:
   - type: web
     name: morning-summary-station
     env: python
-    runtime: python3
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m gunicorn app:app
+    runtime: python3.9
+    buildCommand: bash build.sh
+    startCommand: bash start.sh
+    plan: free
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
       - key: OPENAI_API_KEY
         sync: false
       - key: ACCUWEATHER_API_KEY
@@ -19,5 +22,7 @@ services:
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: REDIRECT_URI
         sync: false
     autoDeploy: true 

@@ -104,10 +104,14 @@ Now you'll have a single button on your home screen that when tapped will:
 4. Configure the following settings:
    - **Name**: `morning-summary-station` (or your preferred name)
    - **Environment**: `Python 3`
-   - **Build Command**: `pip install -r requirements.txt`
+   - **Region**: Choose the closest region to your location
+   - **Branch**: `main`
+   - **Build Command**: `bash build.sh`
    - **Start Command**: `bash start.sh`
+   - **Plan**: Free (or your preferred plan)
    
 5. Add the following environment variables:
+   - `PYTHON_VERSION`: 3.9.0
    - `OPENAI_API_KEY`: Your OpenAI API key
    - `ACCUWEATHER_API_KEY`: Your AccuWeather API key
    - `LOCATION`: London (or your preferred location name)
@@ -115,6 +119,7 @@ Now you'll have a single button on your home screen that when tapped will:
    - `GOOGLE_CALENDAR_ID`: primary (or your specific calendar ID)
    - `GOOGLE_CLIENT_ID`: Your Google Client ID
    - `GOOGLE_CLIENT_SECRET`: Your Google Client Secret
+   - `REDIRECT_URI`: https://your-app-name.onrender.com/oauth2callback
 
 6. Click "Create Web Service"
 7. Once deployed, update your Google OAuth settings:
@@ -122,17 +127,20 @@ Now you'll have a single button on your home screen that when tapped will:
    - Add your Render URL with `/oauth2callback` as an authorized redirect URI
    - Example: `https://morning-summary-station.onrender.com/oauth2callback`
    
-8. Update the `redirect_uris` in your deployed app:
-   - Go to the Render dashboard, find your service
-   - Go to "Environment" tab
-   - Add a new environment variable:
-   - `REDIRECT_URI`: https://morning-summary-station.onrender.com/oauth2callback
-
-9. For the first-time auth flow:
+8. For the first-time auth flow:
    - Visit your app's URL in a browser
    - Follow the authorization steps once to grant calendar access
 
 After deployment, update your iOS Shortcut with the new Render URL.
+
+#### Troubleshooting Render Deployment
+
+If you encounter issues with deployment:
+
+1. Check Render logs for specific error messages
+2. Make sure all environment variables are properly set
+3. Verify your Google OAuth credentials are correct and the redirect URI matches your Render URL
+4. If gunicorn isn't found, you can manually redeploy and select "Clear build cache & deploy"
 
 ## License
 
