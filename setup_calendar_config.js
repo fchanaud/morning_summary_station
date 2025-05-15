@@ -20,7 +20,7 @@ if (!clientId || !clientSecret) {
   process.exit(1);
 }
 
-// Create a basic config object
+// Create the config object
 const config = {
   installed: {
     client_id: clientId,
@@ -31,9 +31,23 @@ const config = {
   }
 };
 
-// Add refresh token if it exists
+// Create a token file content if refresh token is available
 if (refreshToken) {
-  config.refresh_token = refreshToken;
+  // Create a separate token file for the OAuth libraries
+  const tokenData = {
+    refresh_token: refreshToken,
+    scope: 'https://www.googleapis.com/auth/calendar.readonly',
+    token_type: 'Bearer'
+  };
+  
+  // Add expiry in the future
+  const expiryDate = new Date();
+  expiryDate.setDate(expiryDate.getDate() + 7); // Set expiry to 7 days from now
+  tokenData.expiry_date = expiryDate.getTime();
+  
+  // Update the calendar_service.js expectations
+  config.tokens = tokenData;
+  
   console.log('Added refresh token to calendar config');
 } else {
   console.warn('No refresh token provided. Calendar integration will require authentication.');
