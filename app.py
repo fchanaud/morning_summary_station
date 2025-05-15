@@ -391,7 +391,7 @@ Date: {datetime.datetime.now().strftime('%A, %B %d')}
 Weather: {weather_text}
 Events: {events_text if events_text else 'No events today.'}
 
-Make it ENERGETIC, upbeat and SHORT (max 100 words). Use CAPS for emphasis. Include weather and events info."""
+Make it ENERGETIC, upbeat and SHORT (max 100 words). Include all the details about the weather at {LOCATION} ({ADDRESS}) and all events from the Google Calendar for today."""
         
         logger.debug("Sending request to OpenAI API")
         
@@ -407,7 +407,7 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words). Use CAPS for emphasis. Incl
                 response = openai.ChatCompletion.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are an enthusiastic personal assistant that creates brief, energetic morning summaries."},
+                        {"role": "system", "content": "You are an enthusiastic personal assistant that creates brief, energetic morning summaries. You must include all weather information and all calendar events in your summary."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
@@ -423,7 +423,9 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words). Use CAPS for emphasis. Incl
                 logger.warning(f"ChatCompletion API not available: {e}. Falling back to Completion API")
                 response = openai.Completion.create(
                     model="gpt-3.5-turbo-instruct",  # Use the instruct model which is similar to text-davinci-003
-                    prompt=prompt,
+                    prompt=f"""You are an enthusiastic personal assistant that creates brief, energetic morning summaries. You must include all weather information and all calendar events in your summary.
+
+{prompt}""",
                     temperature=0.7,
                     max_tokens=250,
                     top_p=1,
@@ -444,6 +446,9 @@ Make it ENERGETIC, upbeat and SHORT (max 100 words). Use CAPS for emphasis. Incl
             It's {datetime.datetime.now().strftime('%A, %B %d, %Y')}!
             
             I couldn't generate your full summary due to an API error, but I hope you have an AMAZING day anyway!
+            
+            Weather in {LOCATION} ({ADDRESS}): {weather_text}
+            Today's events: {events_text if events_text else 'No events today.'}
             
             Error details: {str(openai_error)}
             """
