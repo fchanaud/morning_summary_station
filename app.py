@@ -117,7 +117,9 @@ def get_credentials():
                 auth_url, _ = flow.authorization_url(
                     access_type='offline',
                     include_granted_scopes='true',
-                    prompt='consent'
+                    prompt='consent',
+                    # Add a login_hint if the user's email is known
+                    # login_hint='user@example.com', # Uncomment and customize if needed
                 )
                 logger.info(f"Generated authorization URL: {auth_url[:50]}...")
                 print(f"Please go to this URL to authorize access: {auth_url}")
@@ -360,6 +362,7 @@ def index():
                 body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
                 h1 { color: #333; }
                 code { background-color: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
+                .note { background-color: #fffde7; padding: 15px; border-left: 4px solid #ffd600; margin: 20px 0; }
             </style>
         </head>
         <body>
@@ -369,6 +372,10 @@ def index():
                 <li>Set up an iOS Shortcut that calls: <code>GET /api/text_summary</code></li>
                 <li>Use the "Speak Text" action in Shortcuts to have your iPhone read the summary aloud</li>
             </ol>
+            <div class="note">
+                <strong>Note:</strong> This application is in testing mode. To use it, you must be added as a test user in the 
+                Google Cloud Console. Please contact the administrator if you need access.
+            </div>
             <p>The first time you use this, you may need to authorize Google Calendar access.</p>
         </body>
     </html>
@@ -478,7 +485,11 @@ def get_text_summary():
                 logger.info(f"Auth required, redirecting to Google OAuth")
                 
                 # Return just the auth URL as plain text for Shortcuts to handle
-                return f"Authorization required. Please visit: {auth_url}", 200
+                return f"""Authorization required. Please visit this URL to authorize access (note: you must be added as a test user in Google Cloud Console): 
+                
+{auth_url}
+
+If you see a warning about the app not being verified, click "Advanced" and then "Go to [app name] (unsafe)" to proceed.""", 200
             except Exception as auth_err:
                 logger.error(f"Error generating auth URL: {auth_err}")
                 return jsonify({"error": f"Authentication error: {str(auth_err)}"}), 500
