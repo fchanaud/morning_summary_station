@@ -192,9 +192,6 @@ def get_calendar_events():
     try:
         # Make sure we have a valid calendar ID
         calendar_id = GOOGLE_CALENDAR_ID
-        if calendar_id == "www":
-            logger.warning("Invalid calendar ID 'www' detected, using 'primary' instead")
-            calendar_id = "primary"
         
         # Get credentials
         creds = get_credentials()
@@ -211,6 +208,8 @@ def get_calendar_events():
         today = datetime.datetime.now()
         today_start = datetime.datetime.combine(today.date(), datetime.time.min).isoformat() + 'Z'
         today_end = datetime.datetime.combine(today.date(), datetime.time.max).isoformat() + 'Z'
+        
+        logger.info(f"Requesting calendar events for calendar ID: {calendar_id}")
         
         # Call the Calendar API
         events_result = service.events().list(
@@ -244,7 +243,21 @@ def get_weather_data():
         }
         
         logger.info(f"Requesting location data for: {ADDRESS}")
+        logger.info(f"AccuWeather API URL: {location_url}")
+        logger.info(f"AccuWeather API Key: {ACCUWEATHER_API_KEY[:5]}...{ACCUWEATHER_API_KEY[-5:] if len(ACCUWEATHER_API_KEY) > 10 else ''}")
+        
         location_response = requests.get(location_url, params=params, timeout=10)
+        
+        # Log full response for debugging
+        logger.info(f"AccuWeather location response status code: {location_response.status_code}")
+        logger.info(f"AccuWeather location response headers: {location_response.headers}")
+        
+        # Try to log response body if possible
+        try:
+            response_text = location_response.text[:200] + "..." if len(location_response.text) > 200 else location_response.text
+            logger.info(f"AccuWeather location response body: {response_text}")
+        except Exception as e:
+            logger.warning(f"Could not log response body: {e}")
         
         # Check status code first
         if location_response.status_code != 200:
@@ -275,7 +288,10 @@ def get_weather_data():
             "details": True
         }
         
+        logger.info(f"Requesting current conditions from AccuWeather API: {current_url}")
         current_response = requests.get(current_url, params=current_params, timeout=10)
+        logger.info(f"AccuWeather current conditions response status code: {current_response.status_code}")
+        
         if current_response.status_code != 200:
             logger.error(f"Error fetching current conditions: status code {current_response.status_code}")
             return {"error": f"Failed to fetch current weather conditions: {current_response.status_code}"}
@@ -289,7 +305,10 @@ def get_weather_data():
             "metric": True
         }
         
+        logger.info(f"Requesting forecast from AccuWeather API: {forecast_url}")
         forecast_response = requests.get(forecast_url, params=forecast_params, timeout=10)
+        logger.info(f"AccuWeather forecast response status code: {forecast_response.status_code}")
+        
         if forecast_response.status_code != 200:
             logger.error(f"Error fetching forecast: status code {forecast_response.status_code}")
             # We can still continue with just the current conditions
@@ -742,70 +761,31 @@ If you see a warning about the app not being verified, click "Advanced" and then
         except Exception as e:
             logger.error(f"Error generating summary: {e}")
             return jsonify({"error": f"Failed to generate summary: {str(e)}"}), 500
-        
+    
         return summary
         
     except Exception as e:
         logger.error(f"Unhandled exception in text_summary endpoint: {e}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
-# Add a new route for using the MCP calendar service directly
-@app.route('/api/calendar_events', methods=['GET'])
-def get_calendar_events_direct():
-    """API endpoint to get calendar events directly using the MCP service"""
-    try:
-        logger.info("Received request to /api/calendar_events")
-        
-        # Run the Node.js script to get calendar events
-        import subprocess
-        import json
-        import os
-        
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                                 "integrations/google-calendar/get_events.js")
-        
-        # Check if the script exists
-        if not os.path.exists(script_path):
-            logger.error(f"Calendar script not found at {script_path}")
-            return jsonify({"error": "Calendar integration not set up"}), 500
-        
-        # Execute the Node.js script
-        try:
-            result = subprocess.run(["node", script_path], 
-                                  capture_output=True, text=True, check=True)
-            events = json.loads(result.stdout)
-            logger.info(f"Successfully retrieved {len(events)} events from calendar")
-            return jsonify(events)
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error executing calendar script: {e}")
-            logger.error(f"Script output: {e.stderr}")
-            return jsonify({"error": "Failed to get calendar events"}), 500
-        
-    except Exception as e:
-        logger.error(f"Unhandled exception in calendar_events endpoint: {e}")
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
-# Add a debugging endpoint to check calendar integration status
+# Add a diagnostic endpoint to check calendar integration status
 @app.route('/api/check_calendar', methods=['GET'])
 def check_calendar_integration():
     """Diagnostic endpoint to check calendar integration status"""
     try:
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "integrations/google-calendar/calendar_config.json")
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                               "integrations/google-calendar/get_events.js")
+        # Check if token exists
+        token_exists = os.path.exists(TOKEN_PATH)
         
         status = {
-            "config_exists": os.path.exists(config_path),
-            "script_exists": os.path.exists(script_path),
-            "token_exists": os.path.exists(TOKEN_PATH),
+            "token_exists": token_exists,
             "api_keys": {
                 "openai": bool(OPENAI_API_KEY),
                 "accuweather": bool(ACCUWEATHER_API_KEY),
                 "google_client_id": bool(CLIENT_CONFIG['web']['client_id']),
                 "google_client_secret": bool(CLIENT_CONFIG['web']['client_secret'])
             },
-            "setup_instructions": "Run 'npm run auth-calendar' to set up Google Calendar integration"
+            "calendar_id": GOOGLE_CALENDAR_ID,
+            "setup_instructions": "You may need to authorize Google Calendar access via the /api/text_summary endpoint."
         }
         
         return jsonify(status)
