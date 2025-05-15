@@ -5,6 +5,7 @@ import datetime
 import logging
 import uuid
 import base64
+import time  # Import time for cache timestamps
 from flask import Flask, jsonify, request, redirect, url_for, session
 import requests
 from dotenv import load_dotenv
@@ -33,6 +34,13 @@ ACCUWEATHER_API_KEY = os.getenv("ACCUWEATHER_API_KEY")
 LOCATION = os.getenv("LOCATION", "London")
 ADDRESS = os.getenv("ADDRESS", "16 acer road, dalston - E83GX")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+
+# Cache for weather data
+weather_cache = {
+    "data": None,
+    "timestamp": 0,
+    "expires_in_seconds": 3600  # Cache expires after 1 hour
+}
 
 # Log configuration at startup (excluding sensitive values)
 logger.info(f"Starting with: LOCATION={LOCATION}, ADDRESS={ADDRESS}, GOOGLE_CALENDAR_ID={GOOGLE_CALENDAR_ID}")
@@ -223,7 +231,10 @@ def get_calendar_events():
         # Extract events
         events = events_result.get('items', [])
         
-        logger.info(f"Retrieved {len(events)} events from Google Calendar")
+        if len(events) == 0:
+            logger.info("No events found in calendar for today")
+        else:
+            logger.info(f"Retrieved {len(events)} events from Google Calendar")
         return events
     except Exception as e:
         logger.error(f"Error fetching calendar events: {e}")
@@ -233,7 +244,17 @@ def get_calendar_events():
 def get_weather_data():
     """
     Fetch weather data from AccuWeather API for the specified location.
+    Uses caching to prevent exceeding API rate limits.
     """
+    global weather_cache
+    
+    # Check if we have valid cached data
+    current_time = time.time()
+    if (weather_cache["data"] is not None and 
+        current_time - weather_cache["timestamp"] < weather_cache["expires_in_seconds"]):
+        logger.info(f"Using cached weather data from {time.ctime(weather_cache['timestamp'])}")
+        return weather_cache["data"]
+    
     try:
         # First, get the location key for the provided address
         location_url = "http://dataservice.accuweather.com/locations/v1/cities/search"
@@ -322,6 +343,11 @@ def get_weather_data():
             "forecast": forecast_data
         }
         
+        # Update cache
+        weather_cache["data"] = weather_data
+        weather_cache["timestamp"] = current_time
+        logger.info(f"Weather data cached at {time.ctime(current_time)}")
+        
         return weather_data
     except requests.exceptions.RequestException as e:
         logger.error(f"Request error when fetching weather data: {str(e)}")
@@ -340,9 +366,6 @@ def generate_summary(events, weather):
     try:
         # Format events for the prompt
         events_text = ""
-        no_events_reason = "No events scheduled for today."
-        
-        # Check if we have any events
         if events:
             for event in events:
                 start_time = event.get("start", {}).get("dateTime", "")
@@ -355,6 +378,11 @@ def generate_summary(events, weather):
                         formatted_time = start_time
                     
                     events_text += f"- {event['summary']} at {formatted_time}\n"
+        
+        # Set the reason for no events
+        if not events_text:
+            no_events_reason = "You have no events scheduled for today."
+            events_text = no_events_reason
         
         # Format weather for the prompt
         weather_text = "Weather information not available."
@@ -380,7 +408,7 @@ def generate_summary(events, weather):
         prompt = f"""Create a brief but enthusiastic morning summary for someone in {LOCATION}.
 Date: {datetime.datetime.now().strftime('%A, %B %d')}
 Weather: {weather_text}
-Events: {events_text if events_text else no_events_reason}
+Events: {events_text}
 
 Focus specifically on providing accurate details about today's weather in {LOCATION} and list all the events from the Google Calendar. DO NOT use any emojis. Make the summary SHORT (max 100 words) but include ALL weather and calendar information."""
         
@@ -676,20 +704,20 @@ def get_text_summary():
         
         # Get calendar events with error handling
         calendar_error = False
+        events = []
         try:
             events = get_calendar_events()
             if events:
-                logger.info(f"Retrieved {len(events)} calendar events")
+                logger.info(f"Retrieved {len(events)} calendar events for today")
             else:
-                logger.warning("No calendar events retrieved or error occurred")
-                calendar_error = True
+                logger.info("No calendar events found for today")
+                # This is not an error, just no events
         except Exception as e:
             logger.error(f"Error retrieving calendar events: {e}")
-            events = []
             calendar_error = True
         
         # Check if we need authorization
-        if not events and not os.path.exists(TOKEN_PATH):
+        if calendar_error and not os.path.exists(TOKEN_PATH):
             # Handle authorization - only if token doesn't exist
             try:
                 # Create a new flow
@@ -734,7 +762,12 @@ If you see a warning about the app not being verified, click "Advanced" and then
             weather = get_weather_data()
             if weather.get("error"):
                 logger.warning(f"Weather API returned an error: {weather['error']}")
-                weather_error = True
+                # Check if we should use cached data
+                if weather.get("error") and "rate limit" in weather.get("error").lower() and weather_cache["data"]:
+                    logger.info("Using cached weather data due to rate limit error")
+                    weather = weather_cache["data"]
+                else:
+                    weather_error = True
         except Exception as e:
             logger.error(f"Error retrieving weather data: {e}")
             weather = {"error": str(e)}
