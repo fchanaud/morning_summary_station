@@ -825,5 +825,14 @@ def check_calendar_integration():
     except Exception as e:
         return jsonify({"error": f"Error checking calendar integration: {str(e)}"}), 500
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000) 
+@app.route('/api/ping', methods=['GET'])
+def ping():
+    """
+    Simple ping endpoint that returns a success message.
+    Used to keep the app alive on Render's free tier.
+    """
+    logger.info("Ping endpoint called")
+    return jsonify({"status": "success", "message": "Application is running"})
+
+if __name__ == "__main__":
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000))) 

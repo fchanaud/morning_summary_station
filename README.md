@@ -142,6 +142,19 @@ If you encounter issues with deployment:
 3. Verify your Google OAuth credentials are correct and the redirect URI matches your Render URL
 4. If gunicorn isn't found, you can manually redeploy and select "Clear build cache & deploy"
 
+### Keep-Alive for Render Free Tier
+
+Render's free tier spins down web services after periods of inactivity. To prevent this:
+
+1. The app includes a `/api/ping` endpoint that returns a simple success response
+2. Use the included `keep_alive.py` script to periodically ping your app:
+   ```bash
+   # Run locally to keep your deployed app alive
+   python keep_alive.py
+   ```
+3. Alternatively, you can set up an external service like [cron-job.org](https://cron-job.org) or [UptimeRobot](https://uptimerobot.com) to ping your endpoint at regular intervals (e.g., every 10 minutes)
+4. Example URL to ping: `https://morning-summary-station.onrender.com/api/ping`
+
 ## License
 
 MIT
