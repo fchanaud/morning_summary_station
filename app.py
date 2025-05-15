@@ -108,6 +108,7 @@ def get_credentials():
                 creds = None
         else:
             try:
+                # Create a new flow - don't store in session yet (will cause serialization issues)
                 flow = Flow.from_client_config(
                     CLIENT_CONFIG,
                     SCOPES,
@@ -121,7 +122,8 @@ def get_credentials():
                 logger.info(f"Generated authorization URL: {auth_url[:50]}...")
                 print(f"Please go to this URL to authorize access: {auth_url}")
                 
-                # Store flow in session for callback
+                # Only store the flow in session when actually needed
+                # and clear it immediately after use to avoid serialization issues
                 session['flow'] = flow
                 return None
             except Exception as e:
@@ -379,6 +381,7 @@ def oauth2callback():
         # Get flow from session
         flow = session.get('flow')
         if not flow:
+            logger.error("No flow found in session during OAuth callback")
             return "Authentication failed. Please restart the app."
         
         # Complete OAuth flow
@@ -386,14 +389,56 @@ def oauth2callback():
         creds = flow.credentials
         
         # Save credentials
-        with open(TOKEN_PATH, 'wb') as token:
-            pickle.dump(creds, token)
+        try:
+            with open(TOKEN_PATH, 'wb') as token:
+                pickle.dump(creds, token)
+            logger.info("Successfully saved credentials to token file")
+        except Exception as token_save_error:
+            logger.error(f"Error saving token: {token_save_error}")
+            return f"Error saving credentials: {str(token_save_error)}"
+        
+        # Remove flow from session to avoid serialization errors
+        session.pop('flow', None)
         
         # Return success message
-        return "Authentication successful! You can close this window and use your iPhone shortcut now."
+        return """
+        <html>
+            <head>
+                <title>Authentication Successful</title>
+                <style>
+                    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }
+                    h1 { color: #4CAF50; }
+                    p { font-size: 18px; }
+                </style>
+            </head>
+            <body>
+                <h1>Authentication Successful!</h1>
+                <p>You can close this window and use your iPhone shortcut now.</p>
+                <p>Your Morning Summary Station is ready to go!</p>
+            </body>
+        </html>
+        """
     except Exception as e:
-        print(f"Error in OAuth callback: {e}")
-        return f"Error during authentication: {str(e)}"
+        logger.error(f"Error in OAuth callback: {e}")
+        return f"""
+        <html>
+            <head>
+                <title>Authentication Error</title>
+                <style>
+                    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; text-align: center; }
+                    h1 { color: #F44336; }
+                    p { font-size: 18px; }
+                    .error { background: #ffebee; padding: 10px; border-radius: 5px; }
+                </style>
+            </head>
+            <body>
+                <h1>Authentication Error</h1>
+                <p>There was an error during authentication:</p>
+                <p class="error">{str(e)}</p>
+                <p>Please try again later.</p>
+            </body>
+        </html>
+        """
 
 @app.route('/api/text_summary', methods=['GET'])
 def get_text_summary():
@@ -420,14 +465,23 @@ def get_text_summary():
         
         # If authorization is needed, redirect to auth URL
         if not events and 'flow' in session:
-            flow = session.get('flow')
-            auth_url, _ = flow.authorization_url(
-                access_type='offline',
-                include_granted_scopes='true',
-                prompt='consent'
-            )
-            logger.info(f"Auth required, redirecting to Google OAuth")
-            return jsonify({"auth_required": True, "auth_url": auth_url})
+            # Handle Flow object with auth URL separately - don't try to JSON serialize it
+            try:
+                flow = session.get('flow')
+                auth_url, _ = flow.authorization_url(
+                    access_type='offline',
+                    include_granted_scopes='true',
+                    prompt='consent'
+                )
+                # Remove flow from session to avoid serialization errors
+                session.pop('flow', None)
+                logger.info(f"Auth required, redirecting to Google OAuth")
+                
+                # Return just the auth URL as plain text for Shortcuts to handle
+                return f"Authorization required. Please visit: {auth_url}", 200
+            except Exception as auth_err:
+                logger.error(f"Error generating auth URL: {auth_err}")
+                return jsonify({"error": f"Authentication error: {str(auth_err)}"}), 500
         
         # Get weather data with error handling
         try:
