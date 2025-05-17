@@ -394,7 +394,7 @@ def generate_summary(events, weather):
             weather_condition = current.get("WeatherText")
             
             if temperature and weather_condition:
-                weather_text = f"Current weather: {weather_condition}, {temperature}°C. "
+                weather_text = f"Current weather: {weather_condition}, {temperature} degrees. "
         
         # Add forecast information if available
         if weather.get("forecast") and weather["forecast"].get("DailyForecasts"):
@@ -402,7 +402,7 @@ def generate_summary(events, weather):
             min_temp = daily["Temperature"]["Minimum"]["Value"]
             max_temp = daily["Temperature"]["Maximum"]["Value"]
             day_condition = daily["Day"]["IconPhrase"]
-            weather_text += f"Today's forecast: {day_condition} with temperatures between {min_temp}°C and {max_temp}°C."
+            weather_text += f"Today's forecast: {day_condition} with temperatures between {min_temp} degrees and {max_temp} degrees."
         
         # Create a prompt optimized for iOS text-to-speech
         prompt = f"""Create a cheerful and energetic morning summary for iOS text-to-speech. Greet the listener, describe today's weather in {LOCATION} using only words and no numbers or symbols, then mention today's calendar events in a smooth, upbeat way, also using only words. End with a short, motivational message. Make the summary sound natural, clear, and easy to listen to, as if you are speaking to a friend. Do not use any symbols, numbers, or formatting—just fully written words in spoken-friendly sentences.
