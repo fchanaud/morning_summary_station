@@ -404,14 +404,13 @@ def generate_summary(events, weather):
             day_condition = daily["Day"]["IconPhrase"]
             weather_text += f"Today's forecast: {day_condition} with temperatures between {min_temp}°C and {max_temp}°C."
         
-        # Create a more concise prompt for the AI to reduce token usage
-        prompt = f"""Create a brief but enthusiastic morning summary for someone in {LOCATION}.
-Date: {datetime.datetime.now().strftime('%A, %B %d')}
-Weather: {weather_text}
-Events: {events_text}
+        # Create a prompt optimized for iOS text-to-speech
+        prompt = f"""Create a cheerful and energetic morning summary for iOS text-to-speech. Greet the listener, describe today's weather in {LOCATION} using only words and no numbers or symbols, then mention today's calendar events in a smooth, upbeat way, also using only words. End with a short, motivational message. Make the summary sound natural, clear, and easy to listen to, as if you are speaking to a friend. Do not use any symbols, numbers, or formatting—just fully written words in spoken-friendly sentences.
 
-Focus specifically on providing accurate details about today's weather in {LOCATION} and list all the events from the Google Calendar. DO NOT use any emojis. Make the summary SHORT (max 100 words) but include ALL weather and calendar information."""
-        
+Weather details: {weather_text}
+Calendar events: {events_text}
+"""
+
         logger.debug("Sending request to OpenAI API")
         logger.debug(f"Prompt details - Events present: {bool(events_text)}, Weather available: {weather_text != 'Weather information not available.'}")
         
@@ -427,7 +426,7 @@ Focus specifically on providing accurate details about today's weather in {LOCAT
                 response = openai.ChatCompletion.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are an enthusiastic personal assistant that creates brief, energetic morning summaries in English. You must NOT use any emojis in your summaries. You must include all weather information and all calendar events in your summary."},
+                        {"role": "system", "content": "You are an energetic, friendly assistant. You create clear, natural, and upbeat morning summaries for iOS text-to-speech. Never use symbols, numbers, or formatting. Always use only words, and end with a short motivational message."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
@@ -443,9 +442,7 @@ Focus specifically on providing accurate details about today's weather in {LOCAT
                 logger.warning(f"ChatCompletion API not available: {e}. Falling back to Completion API")
                 response = openai.Completion.create(
                     model="gpt-3.5-turbo-instruct",  # Use the instruct model which is similar to text-davinci-003
-                    prompt=f"""You are an enthusiastic personal assistant that creates brief, energetic morning summaries in English. You must NOT use any emojis in your summaries. You must include all weather information and all calendar events in your summary.
-
-{prompt}""",
+                    prompt=f"""You are an energetic, friendly assistant. You create clear, natural, and upbeat morning summaries for iOS text-to-speech. Never use symbols, numbers, or formatting. Always use only words, and end with a short motivational message.\n\n{prompt}""",
                     temperature=0.7,
                     max_tokens=250,
                     top_p=1,
